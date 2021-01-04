@@ -1,0 +1,1494 @@
+#!/usr/bin/env ruby
+
+$: << "."
+require "rubygems"
+require "nokogiri"
+require "esf_builder"
+require "pp"
+require "pgm"
+require "commander_details"
+
+class String
+  def unpack1(*args)
+    unpack(*args).first
+  end unless method_defined? :unpack1
+end
+
+module XmlTagHandlers
+  ## Semantic data types - bmd.dat
+  def on_start_node_bmd_textures(attributes)
+    on_start_node_rec :type => "BMD_TEXTURES"
+  end
+  def on_end_node_bmd_textures(attributes, buf, ctx)
+    @esf.end_rec
+  end
+  def on_empty_node_bin6ext(attributes, buf, ctx)
+    data = File.open(File.join(@in_dir, attributes[:path]), 'rb', &:read)
+    @esf.put_4x("\x46", data)
+  end
+  def on_empty_node_bmd_pgm(attributes, buf, ctx)
+    xsz, ysz, data = File.read_pgm(File.join(@in_dir, attributes[:pgm]))
+    @esf.put_u xsz/4
+    @esf.put_u ysz
+    @esf.put_4x("\x46", data)
+  end
+  def on_empty_node_ground_type_field(attributes, buf, ctx)
+    xsz, ysz, data = File.read_pgm(File.join(@in_dir, attributes[:pgm]))
+    put_rec "GROUND_TYPE_FIELD" do
+      @esf.put_u xsz/4
+      @esf.put_u ysz
+      @esf.put_v2 attributes[:xsz].to_f, attributes[:ysz].to_f
+      @esf.put_4x("\x44", data)
+    end
+  end
+  def on_empty_node_height_field(attributes, buf, ctx)
+    xsz, ysz, data = File.read_pgm(File.join(@in_dir, attributes[:pgm]))
+    put_rec "HEIGHT_FIELD" do
+      @esf.put_u xsz/4
+      @esf.put_u ysz
+      @esf.put_v2 attributes[:xsz].to_f, attributes[:ysz].to_f
+      @esf.put_4x("\x4a", data)
+      @esf.put_i attributes[:unknown].to_i
+      @esf.put_flt attributes[:hmin].to_f
+      @esf.put_flt attributes[:hmax].to_f
+    end
+  end
+
+  ## Semantic data types - regions.esf
+  def on_empty_node_line_segment(attributes, buf, ctx)
+    a1 = attributes[:region1].to_i
+    b1 = attributes[:area1].to_i
+    ab1 = (a1 << 16) | b1
+    a2 = attributes[:region2].to_i
+    b2 = attributes[:area2].to_i
+    ab2 = (a2 << 16) | b2
+    v1 = attributes[:v1].to_i
+    v2 = attributes[:v2].to_i
+    data = [v1, v2, ab1, ab2].pack("l*")
+    @stack[-1][3][:data] << data
+  end
+
+  def on_start_node_cell(attributes)
+    [true, nil, {:data => ""}]
+  end
+
+  def on_end_node_cell(attributes, buf, ctx)
+    put_rec "cell" do
+      a0 = attributes[:region].to_i
+      b0 = attributes[:area].to_i
+      ab0 = (a0 << 16) | b0
+      @esf.put_v2 attributes[:x].to_f, attributes[:y].to_f
+      @esf.put_u ab0
+      @esf.put_4x("\x48", ctx[:data])
+    end
+  end
+
+  def on_empty_node_bounds_block(attributes, buf, ctx)
+    put_rec "BOUNDS_BLOCK" do
+      @esf.put_v2 attributes[:xmin].to_f, attributes[:ymin].to_f
+      @esf.put_v2 attributes[:xmax].to_f, attributes[:ymax].to_f
+    end
+  end
+  def on_empty_node_climate_map(attributes, buf, ctx)
+    xsz, ysz, data = File.read_pgm(File.join(@in_dir, attributes[:pgm]))
+    put_rec "climate_map" do
+      @esf.put_u xsz
+      @esf.put_u ysz
+      @esf.put_4x("\x46", data)
+    end
+  end
+  def on_empty_node_wind_map(attributes, buf, ctx)
+    xsz, ysz, data = File.read_pgm(File.join(@in_dir, attributes[:pgm]))
+    put_rec "wind_map" do
+      @esf.put_u xsz/2
+      @esf.put_u ysz
+      @esf.put_flt attributes[:sea_phillips_constant].to_f
+      @esf.put_4x("\x42", data)
+    end
+  end
+  def on_empty_node_connectivity(attributes, buf, ctx)
+    put_rec "connectivity" do
+      a = attributes[:region].to_i
+      b =  attributes[:area].to_i
+      @esf.put_u((a << 16) | b)
+      @esf.put_u attributes[:from].to_i
+      @esf.put_u attributes[:to].to_i
+    end
+  end
+  def on_text_node_black_shroud_outlines(attributes, buf, ctx)
+    put_rec "black_shroud_outlines" do
+      @esf.put_s attributes[:name]
+      @esf.put_v2_ary buf.strip.split(/[\s,]+/).map(&:to_f)
+    end
+  end
+  def on_text_node_region_keys(attributes, buf, ctx)
+    semantic_put_ary("region_keys", buf.strip.split(/[\s=,]+/), 3) do |region, x, y|
+      @esf.put_s region
+      @esf.put_v2 x.to_f, y.to_f
+    end
+  end
+  def on_text_node_sea_indices(attributes, buf, ctx)
+    semantic_put_ary("sea_indices", buf.strip.split(/[\s=]+/), 2) do |name, idx|
+      @esf.put_s name
+      @esf.put_byte idx.to_i
+    end
+  end
+  def on_text_node_land_indices(attributes, buf, ctx)
+    semantic_put_ary("land_indices", buf.strip.split(/[\s=]+/), 2) do |name, idx|
+      @esf.put_s name
+      @esf.put_byte idx.to_i
+    end
+  end
+  def on_text_node_groundtype_index(attributes, buf, ctx)
+    semantic_put_ary("groundtype_index", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+
+  ## Semantic data types - traderoutes.esf
+  def on_text_node_settlements(attributes, buf, ctx)
+    semantic_put_ary("SETTLEMENTS", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+  def on_text_node_ports(attributes, buf, ctx)
+    semantic_put_ary("PORTS", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+  def on_text_node_cai_event_classes(attributes, buf, ctx)
+    semantic_put_ary("CAI_HISTORY_EVENT_HTML_CLASSES", buf.strip.split(/\s+/)) do |name|
+      @esf.put_asc name
+    end
+  end
+
+
+  ## Semantic data types - pathfinding.esf
+  def on_text_node_cell_id_coords(attributes, buf, ctx)
+    data_in = buf.strip.split(/[\s=,]+/).map(&:to_i)
+    data = []
+    until data_in.empty?
+      row, col, cell_id = data_in.shift(3)
+      data << (row << 16) + col
+      data << cell_id
+    end
+    @esf.put_u4_ary data
+  end
+
+  def on_empty_node_boundaries(attributes, buf, ctx)
+    path_id = attributes[:path_id].to_i
+    vertex_index = attributes[:vertex_index].to_i
+    u1 = attributes[:passable_part].to_i
+    u2 = attributes[:unknown2].to_i
+    path_type = attributes[:path_type].to_i
+    unknown = (u1 << 24) + (u2 << 4) + path_type
+    put_rec "boundaries" do
+      @esf.put_u(unknown)
+      @esf.put_u((path_id << 22) + vertex_index)
+    end
+  end
+
+  def on_empty_node_boundaries_empty(attributes, buf, ctx)
+    path_id = attributes[:path_id].to_i
+    u1 = attributes[:passable_part].to_i
+    u2 = attributes[:unknown2].to_i
+    path_type = attributes[:path_type].to_i
+    unknown = (u1 << 24) + (u2 << 4) + path_type
+    @esf.put_u(unknown)
+    @esf.put_u2(path_id)
+  end
+
+  def on_text_node_vertices(attributes, buf, ctx)
+    semantic_put_ary("vertices", buf.strip.split(/[\s,]+/), 2) do |x, y|
+      @esf.put_i((x.to_f * 1048576.0).round.to_i)
+      @esf.put_i((y.to_f * 1048576.0).round.to_i)
+    end
+  end
+
+  ## Semantic data types - startpos.esf
+  def on_empty_node_compressed_data(attributes, buf, ctx)
+    cdata = File.open(File.join(@in_dir, attributes[:path]), 'rb', &:read)
+    meta = cdata[0,5]
+    size = cdata[5, 8].unpack1("q")
+    cdata = cdata[5+8..-1]
+    put_rec "COMPRESSED_DATA" do
+      @esf.put_4x "\x46", cdata
+      put_rec "COMPRESSED_DATA_INFO" do
+        @esf.put_u size
+        @esf.put_4x "\x46", meta
+      end
+    end
+  end
+
+  def on_text_node_BOUNDARIES(attributes, buf, ctx)
+    data = buf.strip.split(/[\s,]+/)
+    ary_data = []
+
+    data.each_slice(2){|a,b|
+      if a == "yes"
+        a = 0x8000_0000
+      elsif a == "no"
+        a = 0x0000_0000
+      else
+        raise "Unrecognized value for a boolean: `#{a}', expected `yes' or `no'"
+      end
+      raise "Unrecognized value for an integer: `#{b}'" unless b=~/\A\d+\z/
+      b = b.to_i
+      ary_data << a+b
+    }
+
+    put_rec "BOUNDARIES" do
+      @esf.put_4x "\x48", ary_data.pack("V*")
+    end
+  end
+
+  def on_empty_node_culture_path(attributes, buf, ctx)
+    put_rec "CULTURE_PATHS" do
+      @esf.put_s attributes[:agent]
+      @esf.put_s attributes[:culture]
+    end
+  end
+
+  def on_text_node_v2x_ary(attributes, buf, ctx)
+    data = buf.strip.split(/[\s,]+/).map{|u| (1048576.0 * u.to_f).round.to_i}
+    @esf.put_4x("\x48", data.pack("l*"))
+  end
+
+  def on_empty_node_population_class(attributes, buf, ctx)
+    a1 = [
+      :Gov_Type_Happy,
+      :Taxes,
+      :Religion,
+      :Events,
+      :Culture,
+      :Industry,
+      :People_In_Gov_Happy,
+      :War,
+      :Reform,
+      :Bankrupcy,
+      :Resistance,
+    ].map{|name| attributes[name].to_i}
+    a2 = [
+      :Gov_Type_Repression,
+      :Gov_Buildings_Repression,
+      :People_In_Gov_Repression,
+      :Town_Watch,
+      :Garrisoned_Forces,
+      :Military_Crackdown,
+    ].map{|name| attributes[name].to_i}
+
+    put_rec "POPULATION CLASSES" do
+      put_rec "POPULATION_CLASS" do
+        @esf.put_s attributes[:Social_Class]
+        @esf.put_4x("\x44", a1.pack("l*"))
+        @esf.put_4x("\x44", a2.pack("l*"))
+        @esf.put_i attributes[:Total_Happy].to_i
+        @esf.put_i attributes[:Total_Unhappy].to_i
+        @esf.put_i attributes[:Total_Repression].to_i
+        @esf.put_i attributes[:Unknown_1].to_i
+        @esf.put_i attributes[:Turns_Rioting].to_i
+        @esf.put_u attributes[:Unknown_3].to_i
+        @esf.put_u attributes[:Unknown_4].to_i
+        @esf.put_u attributes[:Unknown_5].to_i
+        @esf.put_i attributes[:Unknown_zero].to_i
+        @esf.put_i attributes[:Resistance_To_Foreign_Occupation].to_i
+      end
+    end
+  end
+
+  def on_text_node_grid_path(attributes, buf, ctx)
+    type = attributes[:repetitions].to_i
+    points = buf.strip.split(/[\s,]+/).map{|pt| (pt.to_f * 1048576.0).round.to_i}
+    @stack[-1][3][:data] << [points.size/2].pack("V") << points.pack("V*") << [type].pack("V")
+  end
+
+  def on_start_node_grid_paths(attributes)
+    [true, nil, {:data => ""}]
+  end
+
+  def on_end_node_grid_paths(attributes, buf, ctx)
+    @esf.put_4x "\x48", ctx[:data]
+  end
+
+  def on_start_node_obstacle_boundaries(attributes)
+     [true, nil, {:data => ""}]
+  end
+
+  def on_end_node_obstacle_boundaries(attributes, buf, ctx)
+    put_rec "OBSTACLE_BOUNDARIES" do
+      @esf.put_4x "\x48", ctx[:data]
+    end
+  end
+
+  def on_start_node_obstacle_boundaries_entry(attributes)
+    [true, nil, {:pairs => []}]
+  end
+
+  def on_end_node_obstacle_boundaries_entry(attributes, buf, ctx)
+    row = attributes[:row].to_i
+    col = attributes[:col].to_i
+
+    pairs = ctx[:pairs]
+    @stack[-1][3][:data] << [pairs.size/2].pack("V") << pairs.pack("V*") << [(row<<16) + col, 0].pack("VV")
+  end
+
+  def on_empty_node_boundaries_passable_part(attributes, buf, ctx)
+    passable_part = attributes[:passable_part].to_i
+    unknown2      = attributes[:unknown2].to_i
+    path_type     = attributes[:path_type].to_i
+
+    path_id       = attributes[:path_id].to_i & 1023
+    grid_path     = (attributes[:grid_path] == 'yes') ? 1 : 0
+    index         = attributes[:index].to_i
+
+    a = (passable_part << 24) | (unknown2 << 4) | path_type
+    b = (path_id << 22) | (grid_path << 21) | index
+
+    @stack[-1][3][:pairs] << a << b
+  end
+
+  def on_text_node_victory_conditions(attributes, buf, ctx)
+    put_rec "CAMPAIGN_VICTORY_CONDITIONS" do
+      semantic_put_ary("REGION_KEYS", buf.strip.split(/\s+/)) do |name|
+        @esf.put_s name
+      end
+      @esf.put_no
+      @esf.put_u attributes[:year].to_i
+      @esf.put_u attributes[:region_count].to_i
+      @esf.put_bool(attributes[:prestige_victory] == 'yes')
+      @esf.put_u attributes[:campaign_type].to_i
+      @esf.put_no
+      @esf.put_no
+    end
+  end
+
+  def put_campaign_bonus(type, attributes)
+    put_rec "CAMPAIGN_BONUS_VALUE_BLOCK" do
+      put_rec "CAMPAIGN_BONUS_VALUE" do
+        @esf.put_u type
+        @esf.put_i attributes[:subtype].to_i
+        @esf.put_flt attributes[:value].to_f
+        yield
+      end
+    end
+  end
+
+  def on_empty_node_campaign_bonus_0(attributes, buf, ctx)
+    put_campaign_bonus(0, attributes) do
+      @esf.put_s attributes[:agent]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_1(attributes, buf, ctx)
+    put_campaign_bonus(1, attributes) do
+    end
+  end
+
+  def on_empty_node_campaign_bonus_2(attributes, buf, ctx)
+    put_campaign_bonus(2, attributes) do
+      @esf.put_s attributes[:slot_type]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_3(attributes, buf, ctx)
+    put_campaign_bonus(3, attributes) do
+      @esf.put_s attributes[:resource]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_6(attributes, buf, ctx)
+    put_campaign_bonus(6, attributes) do
+      @esf.put_s attributes[:social_class]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_7(attributes, buf, ctx)
+    put_campaign_bonus(7, attributes) do
+      @esf.put_s attributes[:social_class]
+      @esf.put_s attributes[:religion]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_8(attributes, buf, ctx)
+    put_campaign_bonus(8, attributes) do
+      @esf.put_s attributes[:weapon]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_9(attributes, buf, ctx)
+    put_campaign_bonus(9, attributes) do
+      @esf.put_s attributes[:ammunition]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_10(attributes, buf, ctx)
+    put_campaign_bonus(10, attributes) do
+      @esf.put_s attributes[:religion]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_11(attributes, buf, ctx)
+    put_campaign_bonus(11, attributes) do
+      @esf.put_s attributes[:resource]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_12(attributes, buf, ctx)
+    put_campaign_bonus(12, attributes) do
+      @esf.put_s attributes[:unit_ability]
+    end
+  end
+
+  def on_empty_node_campaign_bonus_14(attributes, buf, ctx)
+    put_campaign_bonus(14, attributes) do
+      @esf.put_s attributes[:unit_type]
+    end
+  end
+
+  def on_empty_node_cai_region_hlci(attributes, buf, ctx)
+    put_rec "CAI_REGION_HLCI" do
+      @esf.put_u attributes[:region_id].to_i
+      @esf.put_u attributes[:area_id].to_i
+      @esf.put_4x("\x48", attributes[:area].split(/\s+/).map(&:to_i).pack("V*"))
+      @esf.put_fix attributes[:x].to_f
+      @esf.put_fix attributes[:y].to_f
+    end
+  end
+  def on_empty_node_cai_situated(attributes, buf, ctx)
+    put_rec "CAI_SITUATED" do
+      @esf.put_fix attributes[:x].to_f
+      @esf.put_fix attributes[:y].to_f
+      @esf.put_u attributes[:region_id].to_i
+      @esf.put_4x("\x48", attributes[:theatre_id].split(/\s+/).map(&:to_i).pack("V*"))
+      @esf.put_u attributes[:area_id].to_i
+    end
+  end
+  def on_empty_node_cai_trading_post(attributes, buf, ctx)
+    put_rec "CAI_TRADING_POST" do
+      @esf.put_u attributes[:cai_theatres_id].to_i
+      @esf.put_fix attributes[:x].to_f
+      @esf.put_fix attributes[:y].to_f
+      @esf.put_u attributes[:b].to_i
+    end
+  end
+
+  def on_text_node_rebel_setup(attributes, buf, ctx)
+    put_rec "REBEL_SETUP" do
+      semantic_put_ary("UNIT LIST", buf.strip.split(/\s+/)) do |unit_type|
+        @esf.put_s unit_type
+      end
+      @esf.put_s attributes[:faction]
+      @esf.put_s attributes[:religion]
+      @esf.put_s attributes[:gov]
+      @esf.put_u attributes[:unknown].to_i
+      @esf.put_s attributes[:social_class]
+    end
+  end
+
+  def on_empty_node_land_unit(attributes, buf, ctx)
+    put_rec "LAND_UNIT" do
+      put_rec "LAND_RECORD_KEY" do
+        @esf.put_s attributes[:type]
+      end
+      put_rec "UNIT" do
+        put_rec "UNIT_RECORD_KEY" do
+          @esf.put_s attributes[:type]
+        end
+        put_rec "UNIT_HISTORY" do
+          date_fields = attributes[:created].strip.split(/\s+/)
+          raise "Invalid date: `#{attributes[:created]}" unless date_fields.size == 2 and date_fields[1] =~ /\A\d+\z/
+          year, season = date_fields[1].to_i, date_fields[0]
+          put_rec "DATE" do
+            @esf.put_u year
+            @esf.put_asc season
+          end
+          @esf.put_u 0
+          @esf.put_u 0
+        end
+        put_rec "COMMANDER_DETAILS" do
+          lnam, snam, faction = CommanderDetails.recreate(attributes[:commander])
+          put_loc lnam
+          put_loc snam
+          @esf.put_s faction
+        end
+        put_rec "TRAITS" do
+          @esf.start_ary "TRAIT", nil
+          @esf.end_ary
+        end
+        @esf.put_i attributes[:unit_id].to_i
+        size, max_size = attributes[:size].split(%r[\s*/\s*])
+        @esf.put_u size.to_i
+        @esf.put_u max_size.to_i
+        @esf.put_i attributes[:mp].to_i
+        @esf.put_u attributes[:kills].to_i
+        @esf.put_u attributes[:deaths].to_i
+        @esf.put_u((attributes[:commander_id] || "0").to_i)
+        @esf.put_u attributes[:kills].to_i
+        @esf.put_u attributes[:deaths].to_i
+        @esf.put_byte attributes[:exp].to_i
+        put_loc attributes[:name]
+      end
+      @esf.put_u 0
+    end
+  end
+
+  def on_empty_node_theatre_transition(attributes, buf, ctx)
+    put_rec "THEATRE_TRANSITION_INFO" do
+      put_rec "CAMPAIGN_MAP_TRANSITION_LINK" do
+        @esf.put_flt 0.0
+        if attributes.empty?
+          @esf.put_u 0
+          @esf.put_u 0xFFFF_FFFF
+          @esf.put_u 0xFFFF_FFFF
+        else
+          @esf.put_u attributes[:turns].to_i
+          @esf.put_u attributes[:destination].to_i
+          @esf.put_u attributes[:via].to_i
+        end
+      end
+      if attributes.empty?
+        @esf.put_no
+      else
+        @esf.put_yes
+      end
+      @esf.put_no
+      @esf.put_u 0
+    end
+  end
+
+  def on_text_node_rand_seed(attributes, buf, ctx)
+    put_rec "RandSeed" do
+      @esf.put_u buf.to_i
+    end
+  end
+
+  def on_text_node_owned_direct(attributes, buf, ctx)
+    put_rec "OWNED_DIRECT" do
+      @esf.put_u buf.to_i
+    end
+  end
+
+  def on_text_node_owned_indirect(attributes, buf, ctx)
+    put_rec "OWNED_INDIRECT" do
+      @esf.put_u buf.to_i
+    end
+  end
+
+  def on_text_node_garrison_residence(attributes, buf, ctx)
+    put_rec "GARRISON_RESIDENCE" do
+      @esf.put_u buf.to_i
+    end
+  end
+
+  def on_text_node_cai_technology_tree(attributes, buf, ctx)
+    put_rec "CAI_TECHNOLOGY_TREE" do
+      @esf.put_u buf.to_i
+    end
+  end
+
+  def on_empty_node_gov_republic(attributes, buf, ctx)
+    @esf.start_ary "GOV_IMP", nil
+    @esf.start_elem
+    put_rec "GOVERNMENT::REPUBLIC" do
+      @esf.put_u attributes[:minister_changes].to_i
+      @esf.put_bool(attributes[:had_elections] == 'yes')
+      @esf.put_i attributes[:elections_due].to_i
+      @esf.put_u attributes[:term].to_i
+    end
+    @esf.end_rec
+    @esf.end_ary
+  end
+
+  def on_empty_node_gov_constitutional_monarchy(attributes, buf, ctx)
+    @esf.start_ary "GOV_IMP", nil
+    @esf.start_elem
+    put_rec "GOVERNMENT::CONSTITUTIONAL_MONARCHY" do
+      @esf.put_u attributes[:minister_changes].to_i
+      @esf.put_bool(attributes[:had_elections] == 'yes')
+      @esf.put_i attributes[:elections_due].to_i
+    end
+    @esf.end_rec
+    @esf.end_ary
+  end
+
+  def on_empty_node_gov_absolute_monarchy(attributes, buf, ctx)
+    @esf.start_ary "GOV_IMP", nil
+    @esf.start_elem
+    put_rec "GOVERNMENT::ABSOLUTE_MONARCHY" do
+    end
+    @esf.end_rec
+    @esf.end_ary
+  end
+
+  def on_empty_node_gov_taxes(attributes, buf, ctx)
+    put_rec "GOVERNORSHIP_TAXES" do
+      @esf.put_u attributes[:level_lower].to_i
+      @esf.put_u attributes[:level_upper].to_i
+      @esf.put_byte attributes[:rate_lower].to_i
+      @esf.put_byte attributes[:rate_upper].to_i
+    end
+  end
+
+  def on_empty_node_ordinal_pair(attributes, buf, ctx)
+    put_rec "ORDINAL_PAIR" do
+      put_loc attributes[:name]
+      @esf.put_i attributes[:number].to_i
+    end
+  end
+
+  def on_empty_node_portrait_details(attributes, buf, ctx)
+    put_rec "PORTRAIT_DETAILS" do
+      @esf.put_s(attributes[:card] || "")
+      @esf.put_s(attributes[:template] || "")
+      @esf.put_s(attributes[:info] || "")
+      @esf.put_i((attributes[:number] || "-1").to_i)
+    end
+  end
+
+  def on_start_node_quad_tree_node(attributes)
+    on_start_node_rec(:type => "QUAD_TREE_BIT_ARRAY_NODE")
+  end
+
+  def on_end_node_quad_tree_node(attributes, buf, ctx)
+    on_end_node_rec(attributes, buf, ctx)
+  end
+
+  def on_text_node_quad_tree_leaf(attributes, buf, ctx)
+    put_rec "QUAD_TREE_BIT_ARRAY_NODE" do
+      ab = buf.to_i(16)
+      a = ab >> 32
+      b = ab & 0xFFFF_FFFF
+      @esf.put_u b
+      @esf.put_u a
+    end
+  end
+
+  def on_empty_node_famous_battle_info(attributes, buf, ctx)
+    put_rec "FAMOUS_BATTLE_INFO" do
+      @esf.put_fix attributes[:x].to_f
+      @esf.put_fix attributes[:y].to_f
+      @esf.put_s attributes[:name]
+      @esf.put_i attributes[:a].to_i
+      @esf.put_i attributes[:b].to_i
+      @esf.put_i attributes[:c].to_i
+      @esf.put_bool(attributes[:d] == "yes")
+    end
+  end
+
+  def on_empty_node_cai_border_patrol_point(attributes, buf, ctx)
+    put_rec "CAI_BORDER_PATROL_ANALYSIS_AREA_SPECIFIC_PATROL_POINTS" do
+      put_rec "CAI_BORDER_PATROL_POINT" do
+        @esf.put_fix attributes[:x].to_f
+        @esf.put_fix attributes[:y].to_f
+        @esf.put_4x("\x48", attributes[:a].split(/\s+/).map(&:to_i).pack("V*"))
+      end
+    end
+  end
+
+  def on_empty_node_flag_and_colours(attributes, buf, ctx)
+    put_rec "FACTION_FLAG_AND_COLOURS" do
+      @esf.put_s attributes[:path]
+      [:color1, :color2, :color3].each do |ci|
+        cv = attributes[ci]
+        raise "Not a color: #{cv}" unless cv =~ /\A#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})\z/
+        @esf.put_byte $1.to_i(16)
+        @esf.put_byte $2.to_i(16)
+        @esf.put_byte $3.to_i(16)
+      end
+    end
+  end
+
+  def on_text_node_unit_class_names_list(attributes, buf, ctx)
+    semantic_put_ary("UNIT_CLASS_NAMES_LIST", buf.strip.split(/[\s=]+/), 2) do |loc, used|
+      put_loc loc
+      @esf.put_bool(used=='yes')
+    end
+  end
+  def on_empty_node_map(attributes, buf, ctx)
+    xsz, ysz, data = File.read_pgm(File.join(@in_dir, attributes[:pgm]))
+    put_rec "MAPS" do
+      @esf.put_s attributes[:name]
+      @esf.put_u xsz/4
+      @esf.put_u ysz
+      @esf.put_i attributes[:unknown].to_i
+      @esf.put_4x("\x48", data)
+    end
+  end
+  def on_text_node_settlement_indices(attributes, buf, ctx)
+    semantic_put_ary("SETTLEMENT_INDICES", buf.strip.split(/[\s=]+/), 2) do |name, idx|
+      @esf.put_s name
+      @esf.put_u idx.to_i
+    end
+  end
+  def on_text_node_religion_breakdown(attributes, buf, ctx)
+    semantic_put_ary("RELIGION_BREAKDOWN", buf.strip.split(/[\s=]+/), 2) do |religion, percent|
+      @esf.put_s religion
+      @esf.put_flt percent.to_f
+    end
+  end
+  def on_text_node_region_ownership(attributes, buf, ctx)
+    semantic_put_ary("REGION_OWNERSHIP", buf.strip.split(/[\s=]+/), 2) do |region, owner|
+      @esf.put_s region
+      @esf.put_s owner
+    end
+  end
+  def on_text_node_unit_list(attributes, buf, ctx)
+    semantic_put_ary("UNIT LIST", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+  def on_text_node_resources_array(attributes, buf, ctx)
+    semantic_put_ary("RESOURCES_ARRAY", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+  def on_text_node_REGION_KEYS(attributes, buf, ctx)
+    semantic_put_ary("REGION_KEYS", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+  def on_text_node_commodities_order(attributes, buf, ctx)
+    semantic_put_ary("COMMODITIES_ORDER", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+  def on_text_node_resources_order(attributes, buf, ctx)
+    semantic_put_ary("RESOURCES_ORDER", buf.strip.split(/\s+/)) do |name|
+      @esf.put_s name
+    end
+  end
+  def on_text_node_port_indices(attributes, buf, ctx)
+    semantic_put_ary("PORT_INDICES", buf.strip.split(/[\s=]+/), 2) do |name, idx|
+      @esf.put_s name
+      @esf.put_u idx.to_i
+    end
+  end
+  def on_empty_node_draa(attributes, buf, ctx)
+    put_rec "DIPLOMACY_RELATIONSHIP_ATTITUDES_ARRAY" do
+      @esf.put_i((attributes[:drift] || "0").to_i)
+      @esf.put_i((attributes[:current] || "0").to_i)
+      @esf.put_i((attributes[:limit] || "0").to_i)
+      @esf.put_bool(attributes[:active1] == 'yes')
+      @esf.put_i((attributes[:extra].to_i || "0").to_i)
+      @esf.put_bool(attributes[:active2] == 'yes')
+    end
+  end
+  def on_empty_node_techs(attributes, buf, ctx)
+    put_rec "techs" do
+      @esf.put_s attributes[:name]
+      @esf.put_u attributes[:status].to_i
+      @esf.put_flt attributes[:research_points].to_f
+      @esf.put_u attributes[:school_slot_id].to_i
+      @esf.put_4x("\x48", attributes[:unknown1].split(/\s+/).map(&:to_i).pack("V*"))
+      @esf.put_u attributes[:unknown2].to_i
+    end
+  end
+  def on_empty_node_commander_details(attributes, buf, ctx)
+    put_rec "COMMANDER_DETAILS" do
+      put_loc attributes[:name]
+      put_loc attributes[:surname]
+      @esf.put_s attributes[:faction]
+    end
+  end
+  def on_text_node_commander(attributes, buf, ctx)
+    lnam, snam, faction = CommanderDetails.recreate(buf)
+    put_rec "COMMANDER_DETAILS" do
+      put_loc lnam
+      put_loc snam
+      @esf.put_s faction
+    end
+  end
+  def on_text_node_loc(attributes, buf, ctx)
+    put_loc buf
+  end
+  def on_text_node_loc2(attributes, buf, ctx)
+    put_rec "CAMPAIGN_LOCALISATION" do
+      @esf.put_s ""
+      @esf.put_s buf
+    end
+  end
+  def on_text_node_date2(attributes, buf, ctx)
+    buf = buf.strip
+    if buf == ""
+      is = [0,0,0,0]
+    else
+      is = buf.split(/\s+/).map(&:to_i)
+      raise "Wrong date format, expected four integers: `#{buf}'" unless is.size == 4
+    end
+    put_rec "DATE", "2" do
+      @esf.put_u is[3]
+      @esf.put_u is[2]
+      @esf.put_u is[1]
+      @esf.put_u is[0]
+    end
+  end
+  def on_text_node_date(attributes, buf, ctx)
+    if buf == ""
+      year, season = 0, 'summer'
+    else
+      date_fields = buf.strip.split(/\s+/)
+      raise "Invalid date: `#{buf}'" unless date_fields.size == 2 and date_fields[1] =~ /\A\d+\z/
+      year, season = date_fields[1].to_i, date_fields[0]
+    end
+    put_rec "DATE" do
+      @esf.put_u year
+      @esf.put_asc season
+    end
+  end
+  def on_text_node_unit_history(attributes, buf, ctx)
+    date_fields = buf.strip.split(/\s+/)
+    raise "Invalid date: `#{buf}'" unless date_fields.size == 2 and date_fields[1] =~ /\A\d+\z/
+    year, season = date_fields[1].to_i, date_fields[0]
+    put_rec "UNIT_HISTORY" do
+      put_rec "DATE" do
+        @esf.put_u year
+        @esf.put_asc season
+      end
+      @esf.put_u 0
+      @esf.put_u 0
+    end
+  end
+  def on_text_node_land_key(attributes, buf, ctx)
+    put_rec "LAND_RECORD_KEY" do
+      @esf.put_s buf
+    end
+  end
+  def on_text_node_naval_key(attributes, buf, ctx)
+    put_rec "NAVAL_RECORD_KEY" do
+      @esf.put_s buf
+    end
+  end
+  def on_text_node_unit_key(attributes, buf, ctx)
+    put_rec "UNIT_RECORD_KEY" do
+      @esf.put_s buf
+    end
+  end
+  def on_text_node_agent_ancillaries(attributes, buf, ctx)
+    semantic_put_ary("AgentAncillaries", buf.strip.split(/\s+/)) do |ancillary|
+      @esf.put_s ancillary
+    end
+  end
+  def on_text_node_agent_attributes(attribunes, buf, ctx)
+    semantic_put_ary("AgentAttributes", buf.strip.split(/[\s=]+/), 2) do |attribute, level|
+      @esf.put_s attribute
+      @esf.put_i level.to_i
+    end
+  end
+  def on_text_node_traits(attributes, buf, ctx)
+    put_rec "TRAITS" do
+      semantic_put_ary("TRAIT", buf.strip.split(/[\s=]+/), 2) do |trait, level|
+        @esf.put_s trait
+        @esf.put_i level.to_i
+      end
+    end
+  end
+  def on_text_node_agent_attribute_bonuses(attributes, buf, ctx)
+    semantic_put_ary("AgentAttributeBonuses", buf.strip.split(/[\s=]+/), 2) do |attr_bonus, level|
+      @esf.put_s attr_bonus
+      @esf.put_u level.to_i
+    end
+  end
+  def on_empty_node_building(attributes, buf, ctx)
+    put_rec "BUILDING" do
+      @esf.put_u attributes[:health].to_i
+      @esf.put_s attributes[:name]
+      @esf.put_s attributes[:faction]
+      @esf.put_s attributes[:government]
+    end
+  end
+  def on_text_node_region_ownerships_by_theatre(attributes, buf, ctx)
+    put_rec "REGION_OWNERSHIPS_BY_THEATRE" do
+      @esf.put_s attributes[:theatre]
+      semantic_put_ary("REGION_OWNERSHIPS", buf.strip.split(/[\s=]+/), 2) do |region, owner|
+        @esf.put_s region
+        @esf.put_s owner
+      end
+    end
+  end
+  def on_text_node_ancillary_uniqueness_monitor(attributes, buf, ctx)
+    put_rec "ANCILLARY_UNIQUENESS_MONITOR" do
+      semantic_put_ary("ENTRIES", buf.strip.split(/\s+/)) do |entry|
+        @esf.put_s entry
+      end
+    end
+  end
+  def on_empty_node_agent_ability(attributes, buf, ctx)
+    put_rec "AgentAbilities" do
+      @esf.put_s attributes[:ability]
+      @esf.put_i attributes[:level].to_i
+      @esf.put_s attributes[:attribute]
+    end
+  end
+
+
+  ## Semantic data types - sea_grids.esf
+
+  def on_start_node_sea_grids(attributes)
+    [true, nil, {:theatres => []}]
+  end
+  def on_end_node_sea_grids(attributes, buf, ctx)
+    put_rec "CAI_SEA_GRID_ROOT" do
+      theatres = ctx[:theatres]
+      @esf.put_u theatres.size
+      theatres.each do |ta, tc|
+        rows = tc[:rows]
+        connections = tc[:connections]
+        ysize = rows.size
+        xsize = rows[0].size
+        @esf.put_s ta[:name]
+        @esf.put_v2 ta[:minx].to_f, ta[:miny].to_f
+        @esf.put_v2 ta[:maxx].to_f, ta[:maxy].to_f
+        @esf.put_flt ta[:factor].to_f
+        @esf.put_u xsize
+        @esf.put_u ysize
+
+        rows.each_with_index do |row, yi|
+          row.each_with_index do |(ca, cc), xi|
+            @esf.put_u xi
+            @esf.put_u yi
+            @esf.put_v2 ca[:minx].to_f, ca[:miny].to_f
+            @esf.put_v2 ca[:maxx].to_f, ca[:maxy].to_f
+          end
+        end
+
+        rows.each do |row|
+          row.each do |ca, cc|
+            @esf.put_u ca[:area_id].to_i
+            @esf.put_u cc[:lands].size
+            cc[:lands].each{|s| @esf.put_s s}
+            @esf.put_u cc[:seas].size
+            cc[:seas].each{|s| @esf.put_s s}
+            @esf.put_u cc[:ports].size
+            cc[:ports].each{|s| @esf.put_s s}
+            @esf.put_u cc[:numbers].size
+            cc[:numbers].each{|v| @esf.put_u v.to_i}
+          end
+        end
+
+        @esf.put_u connections.size
+        connections.each do |conn|
+          @esf.put_u conn[:area1].to_i
+          @esf.put_u conn[:area2].to_i
+          @esf.put_flt conn[:value].to_f
+        end
+      end
+    end
+  end
+  def on_start_node_theatre_sea_grid(attributes)
+    [true, nil, {:rows => [], :connections => []}]
+  end
+  def on_end_node_theatre_sea_grid(attributes, buf, ctx)
+    @stack[-1][3][:theatres] << [attributes, ctx]
+  end
+  def on_start_node_sea_grid_row(attributes)
+    [true, nil, {:cells => []}]
+  end
+  def on_end_node_sea_grid_row(attributes, buf, ctx)
+    @stack[-1][3][:rows] << ctx[:cells]
+  end
+  def on_start_node_sea_grid_cell(attributes)
+    [true, nil, {:lands => [], :seas => [], :ports => [], :numbers => []}]
+  end
+  def on_end_node_sea_grid_cell(attributes, buf, ctx)
+    @stack[-1][3][:cells] << [attributes, ctx]
+  end
+  def on_text_node_sea_grid_lands(attributes, buf, ctx)
+    @stack[-1][3][:lands] += buf.strip.split(/\s+/)
+  end
+  def on_text_node_sea_grid_seas(attributes, buf, ctx)
+    @stack[-1][3][:seas] += buf.strip.split(/\s+/)
+  end
+  def on_text_node_sea_grid_ports(attributes, buf, ctx)
+    @stack[-1][3][:ports] += buf.strip.split(/\s+/)
+  end
+  def on_text_node_sea_grid_numbers(attributes, buf, ctx)
+    @stack[-1][3][:numbers] += buf.strip.split(/\s+/).map(&:to_i)
+  end
+
+  def on_start_node_sea_grid_connections(attributes)
+    [true, nil, {:connections => []}]
+  end
+  def on_end_node_sea_grid_connections(attributes, buf, ctx)
+    @stack[-1][3][:connections] = ctx[:connections]
+  end
+  def on_empty_node_sea_grid_connection(attributes, buf, ctx)
+    @stack[-1][3][:connections] << attributes
+  end
+
+
+  ## Semantic data types - poi.esf
+  def on_start_node_pois(attributes)
+    [true, nil, {:pois => []}]
+  end
+  def on_end_node_pois(attributes, buf, ctx)
+    put_rec "CAI_POI_ROOT" do
+      @esf.put_u ctx[:pois].size
+      ctx[:pois].each_with_index do |(pa, pc), i|
+        @esf.put_u i
+        @esf.put_i pa[:code1].to_i
+        @esf.put_bool(pa[:flag1] == "yes")
+        @esf.put_fix pa[:x].to_f
+        @esf.put_fix pa[:y].to_f
+        @esf.put_s pa[:region_name]
+        @esf.put_u pa[:region_id].to_i
+        @esf.put_s pa[:region_name]
+        @esf.put_u pa[:region_id].to_i
+        @esf.put_flt pa[:val1].to_f
+        @esf.put_u pc[:regions1].size
+        pc[:regions1].each{|region|
+          @esf.put_s region[:name]
+          @esf.put_flt region[:val].to_f
+        }
+        @esf.put_flt pa[:val2].to_f
+        @esf.put_u pc[:regions2].size
+        pc[:regions2].each{|region|
+          @esf.put_s region[:name]
+          @esf.put_flt region[:val].to_f
+        }
+        ids = pa[:ids].strip.split(/\s+/)
+        @esf.put_u ids.size
+        ids.each{|id| @esf.put_u id.to_i}
+        @esf.put_u pa[:code2].to_i
+        @esf.put_bool(pa[:flag2] == "yes")
+      end
+    end
+  end
+  def on_start_node_poi(attributes)
+    [true, nil, {:regions1 => [], :regions2 => []}]
+  end
+  def on_end_node_poi(attributes, buf, ctx)
+    @stack[-1][3][:pois] << [attributes, ctx]
+  end
+  def on_empty_node_poi_region1(attributes, buf, ctx)
+    @stack[-1][3][:regions1] << attributes
+  end
+  def on_empty_node_poi_region2(attributes, buf, ctx)
+    @stack[-1][3][:regions2] << attributes
+  end
+
+  ## farm_tile_templates
+  def on_empty_node_wall_post(attributes, buf, ctx)
+    put_rec "WALL_POST_LIST" do
+      put_rec "WALL_POST" do
+        @esf.put_v2 attributes[:x].to_f, attributes[:y].to_f
+        @esf.put_v2 attributes[:dx].to_f, attributes[:dy].to_f
+      end
+    end
+  end
+
+  def on_empty_node_farm_tree(attributes, buf, ctx)
+    put_rec "FARM_TREE_LIST" do
+      put_rec "FARM_TREE" do
+        @esf.put_s attributes[:type]
+        @esf.put_v2 attributes[:x].to_f, attributes[:y].to_f
+      end
+    end
+  end
+
+  def on_text_node_id_list(attributes, buf, ctx)
+    put_rec "ID_LIST" do
+      @esf.put_4x "\x48", buf.strip.split(/\s+/).map(&:to_i).pack("V*")
+    end
+  end
+
+  ## Basic data types
+
+  def on_start_node_esf(attributes)
+    raise "Magic attribute required" unless attributes[:magic]
+    @esf.start_esf attributes[:magic].split(/\s+/).map(&:to_i), attributes[:padding].to_i
+    [true, nil, {}]
+  end
+  def on_end_node_esf(attributes, buf, ctx)
+    @esf.end_esf
+  end
+
+  def on_empty_node_xml_include(attributes, buf, ctx)
+    # puts "Parsing #{attributes[:path]}"
+    parse_file(attributes[:path])
+  end
+
+  def on_start_node_rec(attributes)
+    if @stack[-1][3][:ary]
+      @esf.start_elem
+    else
+      @esf.start_rec attributes[:type], attributes[:version]
+    end
+    [true, nil, {}]
+  end
+  def on_end_node_rec(attributes, buf, ctx)
+    @esf.end_rec
+  end
+
+  def on_start_node_ary(attributes)
+    @esf.start_ary attributes[:type], attributes[:version]
+    [true, nil, {:ary => true}]
+  end
+  def on_end_node_ary(attributes, buf, ctx)
+    @esf.end_ary
+  end
+
+  def on_start_node_node_types(attributes)
+    [true, nil, {}]
+  end
+  def on_end_node_node_types(attributes, buf, ctx)
+  end
+  def on_empty_node_node_type(attributes, buf, ctx)
+    @esf.add_type_code attributes[:name]
+  end
+  def on_text_node_str_index(attributes, buf, ctx)
+    @esf.add_str_index buf, attributes[:idx].to_i
+  end
+  def on_text_node_asc_index(attributes, buf, ctx)
+    @esf.add_asc_index buf, attributes[:idx].to_i
+  end
+  def on_empty_node_v2(attributes, buf, ctx)
+    @esf.put_v2 attributes[:x].to_f, attributes[:y].to_f
+  end
+  def on_empty_node_v3(attributes, buf, ctx)
+    @esf.put_v3 attributes[:x].to_f, attributes[:y].to_f, attributes[:z].to_f
+  end
+  def on_empty_node_v2x(attributes, buf, ctx)
+    @esf.put_fix attributes[:x].to_f
+    @esf.put_fix attributes[:y].to_f
+  end
+
+  def on_empty_node_yes(attributes, buf, ctx)
+    @esf.put_yes
+  end
+  def on_empty_node_no(attributes, buf, ctx)
+    @esf.put_no
+  end
+  def on_text_node_asc(attributes, buf, ctx)
+    if @stack[-1][3][:asc_ary]
+      @stack[-1][3][:asc_ary] << buf
+    else
+      @esf.put_asc buf
+    end
+  end
+  def on_text_node_s(attributes, buf, ctx)
+    if @stack[-1][3][:str_ary]
+      @stack[-1][3][:str_ary] << buf
+    else
+      @esf.put_s buf
+    end
+  end
+  def on_start_node_str_ary(attributes)
+    [true, nil, {:str_ary => []}]
+  end
+  def on_end_node_str_ary(attributes, buf, ctx)
+    @esf.put_str_ary ctx[:str_ary]
+  end
+  def on_start_node_asc_ary(attributes)
+    [true, nil, {:asc_ary => []}]
+  end
+  def on_end_node_asc_ary(attributes, buf, ctx)
+    @esf.put_asc_ary ctx[:asc_ary]
+  end
+  def on_text_node_u(attributes, buf, ctx)
+    @esf.put_u buf.to_i
+  end
+  def on_text_node_i(attributes, buf, ctx)
+    @esf.put_i buf.to_i
+  end
+  def on_text_node_u2z(attributes, buf, ctx)
+    @esf.put_u2z buf.to_i
+  end
+  def on_text_node_u2(attributes, buf, ctx)
+    @esf.put_u2 buf.to_i
+  end
+  def on_text_node_i1(attributes, buf, ctx)
+    @esf.put_i1 buf.to_i
+  end
+  def on_text_node_i2(attributes, buf, ctx)
+    @esf.put_i2 buf.to_i
+  end
+  def on_text_node_angle(attributes, buf, ctx)
+    @esf.put_angle buf.to_f
+  end
+  def on_text_node_byte(attributes, buf, ctx)
+    @esf.put_byte buf.to_i
+  end
+  def on_text_node_flt(attributes, buf, ctx)
+    @esf.put_flt buf.to_f
+  end
+  def on_text_node_fltnan(attributes, buf, ctx)
+    @esf.put_flt [buf.to_i(16)].pack("V").unpack1("f")
+  end
+  def on_text_node_uint64(attributes, buf, ctx)
+    @esf.put_u8(buf.to_i)
+  end
+  def on_text_node_int64(attributes, buf, ctx)
+    @esf.put_i8(buf.to_i)
+  end
+  def on_text_node_x21(attributes, buf, ctx)
+    @esf.put [0x21, buf.to_i].pack("CV")
+  end
+  def on_text_node_x23(attributes, buf, ctx)
+    @esf.put [0x23, buf.to_i].pack("CC")
+  end
+  def on_text_node_x24(attributes, buf, ctx)
+    @esf.put [0x24, buf.to_i].pack("Cv")
+  end
+  def on_text_node_x25(attributes, buf, ctx)
+    @esf.put [0x25, buf.to_i].pack("CV")
+  end
+  def on_text_node_u4_ary(attributes, buf, ctx)
+    @esf.put_u4_ary buf.strip.split(/\s+/).map(&:to_i)
+  end
+  def on_text_node_i1_ary(attributes, buf, ctx)
+    @esf.put_i1_ary buf.strip.split(/\s+/).map(&:to_i)
+  end
+  def on_text_node_i4_ary(attributes, buf, ctx)
+    @esf.put_i4_ary buf.strip.split(/\s+/).map(&:to_i)
+  end
+  def on_text_node_u2_ary(attributes, buf, ctx)
+    @esf.put_u2_ary buf.strip.split(/\s+/).map(&:to_i)
+  end
+  def on_text_node_i2_ary(attributes, buf, ctx)
+    @esf.put_i2_ary buf.strip.split(/\s+/).map(&:to_i)
+  end
+  def on_text_node_flt_ary(attributes, buf, ctx)
+    @esf.put_flt_ary buf.strip.split(/\s+/).map(&:to_f)
+  end
+  def on_text_node_v2_ary(attributes, buf, ctx)
+    @esf.put_v2_ary buf.strip.split(/[\s,]+/).map(&:to_f)
+  end
+  def on_text_node_v3_ary(attributes, buf, ctx)
+    @esf.put_v3_ary buf.strip.split(/[\s,]+/).map(&:to_f)
+  end
+  def on_text_node_bool_ary(attributes, buf, ctx)
+    @esf.put_bool_ary buf.strip.split(/[\s,]+/).map(&:to_i)
+  end
+  def put_bin_hex(type, buf)
+    @esf.put_4x([type].pack("C"), buf.strip.split(/[;,\s]+/).map{|x| x.to_i(16)}.pack("C*"))
+  end
+  def on_text_node_bin0(attributes, buf, ctx)
+    put_bin_hex(0x40, buf)
+  end
+  def on_text_node_bin1(attributes, buf, ctx)
+    put_bin_hex(0x41, buf)
+  end
+  def on_text_node_bin2(attributes, buf, ctx)
+    put_bin_hex(0x42, buf)
+  end
+  def on_text_node_bin3(attributes, buf, ctx)
+    put_bin_hex(0x43, buf)
+  end
+  def on_text_node_bin4(attributes, buf, ctx)
+    put_bin_hex(0x44, buf)
+  end
+  def on_text_node_bin5(attributes, buf, ctx)
+    put_bin_hex(0x45, buf)
+  end
+  def on_text_node_bin6(attributes, buf, ctx)
+    put_bin_hex(0x46, buf)
+  end
+  def on_text_node_bin7(attributes, buf, ctx)
+    put_bin_hex(0x47, buf)
+  end
+  def on_text_node_bin8(attributes, buf, ctx)
+    put_bin_hex(0x48, buf)
+  end
+  def on_text_node_bin9(attributes, buf, ctx)
+    put_bin_hex(0x49, buf)
+  end
+  def on_text_node_binA(attributes, buf, ctx)
+    put_bin_hex(0x4A, buf)
+  end
+  def on_text_node_binB(attributes, buf, ctx)
+    put_bin_hex(0x4B, buf)
+  end
+  def on_text_node_binC(attributes, buf, ctx)
+    put_bin_hex(0x4C, buf)
+  end
+  def on_text_node_binD(attributes, buf, ctx)
+    put_bin_hex(0x4D, buf)
+  end
+  def on_text_node_binE(attributes, buf, ctx)
+    put_bin_hex(0x4E, buf)
+  end
+  def on_text_node_binF(attributes, buf, ctx)
+    put_bin_hex(0x4F, buf)
+  end
+  def on_text_node_bin10(attributes, buf, ctx)
+    put_bin_hex(0x50, buf)
+  end
+  def on_text_node_bin11(attributes, buf, ctx)
+    put_bin_hex(0x51, buf)
+  end
+  def on_text_node_bin12(attributes, buf, ctx)
+    put_bin_hex(0x52, buf)
+  end
+  def on_text_node_bin13(attributes, buf, ctx)
+    put_bin_hex(0x53, buf)
+  end
+  def on_text_node_bin14(attributes, buf, ctx)
+    put_bin_hex(0x54, buf)
+  end
+  def on_text_node_bin15(attributes, buf, ctx)
+    put_bin_hex(0x55, buf)
+  end
+  def on_text_node_bin16(attributes, buf, ctx)
+    put_bin_hex(0x56, buf)
+  end
+  def on_text_node_bin17(attributes, buf, ctx)
+    put_bin_hex(0x57, buf)
+  end
+  def on_text_node_bin18(attributes, buf, ctx)
+    put_bin_hex(0x58, buf)
+  end
+  def on_text_node_bin19(attributes, buf, ctx)
+    put_bin_hex(0x59, buf)
+  end
+  def on_text_node_bin1a(attributes, buf, ctx)
+    put_bin_hex(0x5a, buf)
+  end
+  def on_text_node_bin1b(attributes, buf, ctx)
+    put_bin_hex(0x5b, buf)
+  end
+  def on_text_node_bin1c(attributes, buf, ctx)
+    put_bin_hex(0x5c, buf)
+  end
+  def on_text_node_bin1d(attributes, buf, ctx)
+    put_bin_hex(0x5d, buf)
+  end
+  def on_text_node_bin1e(attributes, buf, ctx)
+    put_bin_hex(0x5e, buf)
+  end
+  def on_text_node_bin1f(attributes, buf, ctx)
+    put_bin_hex(0x5f, buf)
+  end
+
+  ## Common node types
+  def on_start_text_node(attributes)
+    [false, "", {}]
+  end
+
+  def on_start_empty_node(attributes)
+    [false, nil, {}]
+  end
+
+  ## Utilities (should move to esf builder ???)
+
+  def put_rec(type, version=nil)
+    if @stack[-1][3][:ary]
+      @esf.start_elem
+    else
+      @esf.start_rec type, version
+    end
+    # hack to make sure it's not considered an array
+    @stack << [nil, nil, nil, {}]
+    yield
+    @stack.pop
+    @esf.end_rec
+    [false, nil, {}]
+  end
+
+  def semantic_put_ary(type, data, n=1)
+    @esf.start_ary type, nil
+    until data.empty?
+      @esf.start_elem
+      yield(*data.shift(n))
+      @esf.end_rec
+    end
+    @esf.end_ary
+  end
+
+  def put_loc(loc)
+    put_rec "CAMPAIGN_LOCALISATION" do
+      if loc == ""
+        @esf.put_s ""
+        @esf.put_s ""
+      else
+        @esf.put_s loc
+      end
+    end
+  end
+
+  ## Autoconfigure
+  OnStart = Hash.new{|ht,k| raise "Unknown tag open #{k.inspect}"}
+  OnEnd = Hash.new{|ht,k| raise "Unknown tag close #{k.inspect}"}
+
+  self.instance_methods.each do |m|
+    m = m.to_s
+    case m
+    when /\Aon_text_node_(.*)\z/
+      OnStart[$1] = :on_start_text_node
+      OnEnd[$1]   = m.to_sym
+    when /\Aon_empty_node_(.*)\z/
+      OnStart[$1] = :on_start_empty_node
+      OnEnd[$1]   = m.to_sym
+    when /\Aon_start_node_(.*)\z/
+      OnStart[$1] = m.to_sym
+    when /\Aon_end_node_(.*)\z/
+      OnEnd[$1] = m.to_sym
+    end
+  end
+end
+
+class Xml2Esf < Nokogiri::XML::SAX::Document
+  include XmlTagHandlers
+
+  ## Nokogiri callbacks
+  def start_element_namespace(name, attributes, *namespace_stuff)
+    raise "Cannot nest tags in this context" unless @stack[-1][0]
+    attrs = {}
+    attributes.each do |a|
+      attrs[a.localname.to_sym] = a.value
+    end
+    can_nest, buf, ctx = send(OnStart[name], attrs)
+    @stack << [can_nest, attrs, buf, ctx]
+  end
+
+  def end_element_namespace(name, *namespace_stuff)
+    can_nest, attrs, buf, ctx = *@stack.pop
+    send(OnEnd[name], attrs, buf, ctx)
+  end
+
+  def characters(chars)
+    if buf = @stack[-1][2]
+      buf << chars
+    elsif chars =~ /\S/
+      raise "Illegal place for non-whitespace characters: #{@stack.inspect} #{chars.inspect}"
+    end
+  end
+
+  ## Everything else
+
+  attr_reader :esf, :stack
+
+  def self.parse(in_dir)
+    new(in_dir).esf.data
+  end
+
+  def parse_file(rel_path)
+    parser = Nokogiri::XML::SAX::Parser.new(self, 'UTF-8')
+    full_path = File.join(@in_dir, rel_path)
+    raise "No such file or directory: #{full_path}" unless File.exist?(full_path)
+    parser.parse_file(full_path)
+  end
+
+  def initialize(in_dir)
+    super()
+    @in_dir = in_dir
+    @esf    = EsfBuilder.new
+    @stack  = [[true, nil, {}, {}]]
+    parse_file('esf.xml')
+  end
+end
+
+def usage!(msg=nil)
+  STDERR.puts msg if msg
+  STDERR.puts "Usage: #{$0} input_dir output.esf"
+  exit 1
+end
+
+usage! unless ARGV.size == 2
+usage! "Error: #{ARGV[0]} not found" unless File.exist?(ARGV[0])
+usage! "Error: #{ARGV[0]} is not directory" unless File.directory?(ARGV[0])
+usage! "Error: #{ARGV[1]} is a directory" if File.directory?(ARGV[1])
+
+in_dir = ARGV[0]
+out_file = File.open(ARGV[1], 'wb')
+
+out_file.write Xml2Esf.parse(in_dir)

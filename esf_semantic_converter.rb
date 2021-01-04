@@ -861,38 +861,38 @@ end
     raise SemanticFail.new unless a1.size == 11
     raise SemanticFail.new unless a2.size == 6
     attrs = [
-      ["Social Class", cls.xml_escape],
+      ["Social_Class", cls.xml_escape],
 
-      ["Gov Type Happy", a1.shift],
+      ["Gov_Type_Happy", a1.shift],
       ["Taxes", a1.shift],
       ["Religion", a1.shift],
       ["Events", a1.shift],
       ["Culture", a1.shift],
       ["Industry", a1.shift],
-      ["People In Gov Happy", a1.shift],
+      ["People_In_Gov_Happy", a1.shift],
       ["War", a1.shift],
       ["Reform", a1.shift],
       ["Bankrupcy", a1.shift],
       ["Resistance", a1.shift],
 
-      ["Gov Type Repression", a2.shift],
-      ["Gov Buildings Repression", a2.shift],
-      ["People In Gov Repression", a2.shift],
-      ["Town Watch", a2.shift],
-      ["Garrisoned Forces", a2.shift],
-      ["Military Crackdown", a2.shift],
+      ["Gov_Type_Repression", a2.shift],
+      ["Gov_Buildings_Repression", a2.shift],
+      ["People_In_Gov_Repression", a2.shift],
+      ["Town_Watch", a2.shift],
+      ["Garrisoned_Forces", a2.shift],
+      ["Military_Crackdown", a2.shift],
 
-      ["Total Happy", data.shift],
-      ["Total Unhappy", data.shift],
-      ["Total Repression", data.shift],
+      ["Total_Happy", data.shift],
+      ["Total_Unhappy", data.shift],
+      ["Total_Repression", data.shift],
 
       ["Unknown_1", data.shift],    # rioting-related
-      ["Turns Rioting", data.shift],
+      ["Turns_Rioting", data.shift],
       ["Unknown_3", data.shift],    # (uint) rioting related
       ["Unknown_4", data.shift],    # (uint) rioting-related
       ["Unknown_5", data.shift],    # (uint) 7 is normal, 1/2/6/10 also seen, rioting-related
       ["Unknown_zero", data.shift],
-      ["Resistance To Foreign Occupation", data.shift],
+      ["Resistance_To_Foreign_Occupation", data.shift],
     ]
     raise SemanticFail.new unless a1 == [] and a2 == [] and data == []
     out!("<population_class")
@@ -1197,6 +1197,11 @@ end
     autoconvert_v2x "CAI_BDI_RECRUITMENT_NEW_FORCE_OF_OR_REINFORCE_TO_STRENGTH", 4
   end
 
+  def convert_rec_FACTION_INTERNATIONAL_TRADE_ROUTES_ARRAY
+    annotate_rec_nth "FACTION_INTERNATIONAL_TRADE_ROUTES_ARRAY",
+      [:u, 0] => "Route ID"
+  end
+
   def convert_rec_CAI_WORLD_FACTIONS
     annotate_rec("CAI_WORLD_FACTIONS",
       [:u, 2] => "Faction AI ID",
@@ -1205,11 +1210,6 @@ end
       [:u_ary, 14] => "BDI Information",
       [:u_ary, 21] => "BDI Information"
     )
-  end
-
-  def convert_rec_FACTION_INTERNATIONAL_TRADE_ROUTES_ARRAY
-    annotate_rec_nth "FACTION_INTERNATIONAL_TRADE_ROUTES_ARRAY",
-      [:u, 0] => "Route ID"
   end
 
   def convert_rec_INTERNATIONAL_TRADE_ROUTE
@@ -1659,6 +1659,7 @@ end
       [:u, 3] => "New Minimum When New Settlement Emerged ?"
     )
   end
+
   def convert_rec_REGION_FACTORS
     annotate_rec("REGION_FACTORS",
       [:u, 2] => "Current Population",
@@ -1911,7 +1912,7 @@ end
     out!("<techs name=\"#{name.xml_escape}\" status=\"#{status}\" research_points=\"#{research_points}\" school_slot_id=\"#{school_slot_id}\" unknown1=\"#{unknown1}\" unknown2=\"#{unknown2}\"/>")
   end
 
-  def convert_rec_COMMANDER__DETAILS
+  def convert_rec_COMMANDER_DETAILS
     fnam, lnam, faction = get_rec_contents([:rec, :CAMPAIGN_LOCALISATION, nil], [:rec, :CAMPAIGN_LOCALISATION, nil], :s)
     fnam = ensure_loc(fnam)
     lnam = ensure_loc(lnam)
